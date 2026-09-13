@@ -1,0 +1,8 @@
+{
+  "name": "juejin-publisher",
+  "version": "1.0.0",
+  "description": "掘金全自动发布（草稿/发布/专栏/封面/标签/审核状态）+ 知乎 CDP 半自动",
+  "author": {
+    "name": "Thneonl"
+  }
+}

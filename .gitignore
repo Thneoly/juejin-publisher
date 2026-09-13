@@ -1,0 +1,9 @@
+__pycache__/
+*.py[oc]
+.venv/
+
+# 凭据与本地状态（绝不入库）
+.juejin.env
+.cdp-profile/
+_wf/
+*.png
