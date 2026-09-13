@@ -1,6 +1,6 @@
 {
   "name": "article-pipeline",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "文章生产线 workflow：材料+主题 → 初稿 → 三路评审 → 修订 → 对抗复审 → 提问与升级清单",
   "author": {
     "name": "Thneonl"

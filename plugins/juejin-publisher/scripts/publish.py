@@ -11,6 +11,7 @@
   * 分类：人工智能 6809637773935378440（可在 frontmatter category_id 覆盖）
   * 审核：发布成功 ≠ 上线——status 0=审核中（前台 404 属正常），1/2=已上线；
     正文含招聘平台 URL/域名字符串会被机审按「推广类」驳回（url_guard 会警告）
+  * CDP 标签生命周期：用完即关（close_page）、知乎页按 URL 复用、cleanup 一键清残留
 
 用法（uv run 或任意 python3.10+；依赖 websockets、pillow）：
 
@@ -25,6 +26,7 @@
   uv run publish.py zhihu  文章.md        # CDP：知乎写文章页自动填标题正文，人工点发布
   uv run publish.py html   文章.md        # 调试：预览知乎粘贴用 HTML
   uv run publish.py status <article_id>   # 查审核状态
+  uv run publish.py cleanup               # 关闭 CDP 浏览器堆积的标签（防卡死；--all 连知乎页一起清）
 
 文章用 Markdown + frontmatter（title_zhihu / title_juejin / description 50~100 字 /
 category_id / tags / cover 可选）。正文里的 HTML 注释一律剥离不外发。
@@ -389,6 +391,30 @@ def cmd_status(args) -> None:
     print(article_status_hint(args.article_id, cookie) or "查询失败")
 
 
+def cmd_cleanup(args) -> None:
+    """关闭 CDP 浏览器里堆积的标签（保留一个保活；--all 连知乎写作页一起清）。"""
+    ensure_browser()
+    tabs = list_tabs()
+    if not tabs:
+        print("（浏览器没有页面标签）")
+        return
+    keep_zhihu = not getattr(args, "all", False)
+    doomed = [t for t in tabs
+              if not (keep_zhihu and "zhuanlan.zhihu.com/write" in t.get("url", ""))]
+    if len(doomed) == len(tabs):
+        doomed = doomed[:-1]              # 至少留一个标签保活，否则窗口退出、CDP 断线
+    closed = 0
+    for t in doomed:
+        try:
+            tab = Tab(t["webSocketDebuggerUrl"])
+            tab.call("Target.closeTarget", targetId=t["id"])
+            tab.close()
+            closed += 1
+        except Exception:
+            continue
+    print(f"✓ 已关闭 {closed}/{len(tabs)} 个标签（保留 {len(tabs) - closed} 个保活）")
+
+
 # ---------------------------------------------------------------------- CDP
 
 BROWSER_CANDIDATES = [
@@ -440,6 +466,7 @@ class Tab:
         self._cm = ws_connect(ws_url, open_timeout=10, close_timeout=5)
         self.ws = self._cm.__enter__()
         self._id = 0
+        self.target_id: str | None = None   # 页面 target，close_page 用
         self.requests: list[dict] = []      # Network.requestWillBeSent 事件缓存
 
     def close(self) -> None:
@@ -447,6 +474,15 @@ class Tab:
             self._cm.__exit__(None, None, None)
         except Exception:
             pass
+
+    def close_page(self) -> None:
+        """连 WebSocket 一起把页面标签关掉——长期驻留的 CDP 浏览器不关页会标签堆积卡死。"""
+        if self.target_id:
+            try:
+                self.call("Target.closeTarget", targetId=self.target_id)
+            except Exception:
+                pass
+        self.close()
 
     def _handle_event(self, msg: dict) -> None:
         if msg.get("method") == "Network.requestWillBeSent":
@@ -495,7 +531,22 @@ class Tab:
         return r.get("cookies", [])
 
 
-def open_tab(url: str) -> Tab:
+def list_tabs() -> list[dict]:
+    try:
+        with urllib.request.urlopen(f"{CDP_HTTP}/json", timeout=5) as r:
+            return [t for t in json.loads(r.read().decode("utf-8")) if t.get("type") == "page"]
+    except Exception:
+        return []
+
+
+def open_tab(url: str, reuse_prefix: str | None = None) -> Tab:
+    """打开页面标签；给 reuse_prefix 时优先复用现有页（防长期运行的浏览器标签堆积）。"""
+    if reuse_prefix:
+        for t in list_tabs():
+            if t.get("url", "").startswith(reuse_prefix) and t.get("webSocketDebuggerUrl"):
+                tab = Tab(t["webSocketDebuggerUrl"])
+                tab.target_id = t["id"]
+                return tab
     for method in ("PUT", "GET"):     # Chrome 111+ 要求 PUT
         try:
             req = urllib.request.Request(
@@ -503,7 +554,9 @@ def open_tab(url: str) -> Tab:
             with urllib.request.urlopen(req, timeout=5) as r:
                 target = json.loads(r.read().decode("utf-8"))
             if target.get("webSocketDebuggerUrl"):
-                return Tab(target["webSocketDebuggerUrl"])
+                tab = Tab(target["webSocketDebuggerUrl"])
+                tab.target_id = target.get("id")
+                return tab
         except urllib.error.HTTPError:
             continue
     die("无法新建标签页——浏览器可能弹了确认框，点一下再重试")
@@ -569,9 +622,9 @@ def cmd_login(args) -> None:
             pass
         time.sleep(3)
     else:
-        tab.close()
+        tab.close_page()
         die("5 分钟内未检测到掘金登录——确认扫码成功后重跑 login")
-    tab.close()
+    tab.close_page()
 
     ztab = open_tab("https://www.zhihu.com/signin?next=%2Fwrite")
     print("· 已打开知乎登录页——顺手扫码（zhihu 命令要用；现在不想登可 Ctrl+C 跳过，或等 3 分钟自动跳过）")
@@ -590,7 +643,7 @@ def cmd_login(args) -> None:
             print("· 未检测到知乎登录——之后跑 zhihu 命令时会再等一次，不影响掘金通道")
     except KeyboardInterrupt:
         print("· 已跳过知乎登录")
-    ztab.close()
+    ztab.close_page()
     print("→ 全部就绪：draft/publish 走掘金 API，zhihu 走浏览器注入")
 
 
@@ -750,7 +803,7 @@ def cmd_zhihu(args) -> None:
         die("frontmatter 缺 title_zhihu")
     try:
         ensure_browser()
-        tab = open_tab(ZHIHU_WRITE)
+        tab = open_tab(ZHIHU_WRITE, reuse_prefix="https://zhuanlan.zhihu.com")
         wait_page(tab, "location.href.includes('/write')", timeout=30, desc="进入写文章页")
         if tab.evaluate("location.href.includes('signin') || location.href.includes('login')"):
             print("· 检测到知乎未登录——请在刚打开的浏览器窗口里登录，登录后自动继续（最长 5 分钟）")
@@ -860,12 +913,12 @@ def upload_cover(post: dict, draft_id: str) -> bool:
               const img = document.querySelector('.coverselector_container .preview-box img');
               return img ? img.src.split('?')[0] : '';
             })()""")
-            tab.close()
+            tab.close_page()
             if cover_url:
                 print(f"✓ 封面已保存进草稿：…{cover_url[-40:]}")
                 return True
         else:
-            tab.close()
+            tab.close_page()
     except Exception as e:
         print(f"⚠ 封面上传失败（{str(e)[:60]}）——发布不带封面，可稍后 `cover <md>` 手动补")
     return False
@@ -1021,6 +1074,7 @@ def main() -> None:
         ("login", cmd_login, "浏览器扫码：掘金抓 Cookie + 知乎顺手登录", None, ()),
         ("whoami", cmd_whoami, "校验 Cookie 并显示当前账号", None, ()),
         ("status", cmd_status, "查文章审核状态（0=审核中，1/2=已上线）", "article_id", ()),
+        ("cleanup", cmd_cleanup, "关闭 CDP 浏览器堆积的标签（防卡死；--all 连知乎写作页一起清）", None, ("--all",)),
         ("preview", cmd_preview, "离线校验（不发任何请求）", "file", ()),
         ("tags", cmd_tags, "搜索掘金标签 ID", "keyword", ()),
         ("columns", cmd_columns, "列出我的专栏；--use <id> 设为默认", None, ("--use",)),
@@ -1043,6 +1097,8 @@ def main() -> None:
                 sp.add_argument("--draft", help="指定草稿 ID（默认取 meta 里记的）")
             elif fl == "--no-cover":
                 sp.add_argument("--no-cover", action="store_true", help="跳过自动封面")
+            elif fl == "--all":
+                sp.add_argument("--all", action="store_true", help="连知乎写作页一起清")
         sp.set_defaults(func=fn)
 
     args = p.parse_args()
