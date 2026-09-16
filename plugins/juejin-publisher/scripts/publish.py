@@ -3,33 +3,29 @@
 """juejin-publisher：掘金全自动发布 + 知乎 CDP 半自动（Markdown → 平台）
 
 2026-09 逆向实测口径（真实账号全链路验证过）：
-  * 所有 api.juejin.cn 请求必须带 ?aid=2608&uuid=<真实设备uuid>（随机值会被 WAF 掐 TLS；login 自动收割）
+  * 所有 api.juejin.cn 请求带 ?aid=2608&uuid=<19位>
   * 建草稿响应里 article_id 恒为 "0"（未发布语义），真实草稿 ID 在 data.id
   * 每篇文章最多 2 个标签（err 4031）；标签搜索 = tag_api/v1/query_tag_list {key_word}
   * 发布体 = {"draft_id","sync_to_org":false,"column_ids":[...],"theme_ids":[],
               "origin_word_count","encrypted_word_count"}，专栏靠 column_ids
+  * 专栏挂载靠 column_ids；封面（掘金 192×128 / 知乎 1200×675）PIL 自动生成并上传
   * 分类：人工智能 6809637773935378440（可在 frontmatter category_id 覆盖）
-  * 审核：发布成功 ≠ 上线——status 0=审核中（前台 404 属正常），1/2=已上线；
-    正文含招聘平台 URL/域名字符串会被机审按「推广类」驳回（url_guard 会警告）
-  * CDP 标签生命周期：用完即关（close_page）、知乎页按 URL 复用、cleanup 一键清残留
 
 用法（uv run 或任意 python3.10+；依赖 websockets、pillow）：
 
   uv run publish.py login                 # 浏览器扫码：掘金抓 Cookie + 知乎顺手登录
   uv run publish.py whoami                # 校验 Cookie / 显示账号，并记住 user_id
-  uv run publish.py preview 文章.md       # 离线校验（摘要 50~100、checklist 剥离、标签映射、URL 门禁）
-  uv run publish.py tags <关键词>          # 搜掘金标签 ID（掘金标签库有限，很多知乎习惯标签不存在）
+  uv run publish.py preview 文章.md     # 离线校验（摘要 50~100、checklist 剥离、标签映射）
+  uv run publish.py tags <关键词>          # 搜掘金标签 ID
   uv run publish.py columns               # 列出我的专栏；--use <id> 切换默认专栏
-  uv run publish.py draft  文章.md        # 建掘金草稿（分类+双标签+摘要+自动封面）
-  uv run publish.py publish 文章.md       # 全自动发布：草稿→封面→挂专栏→发布→审核状态
-  uv run publish.py cover  文章.md        # PIL 生成 192×128 封面并经编辑器上传（草稿需先建）
-  uv run publish.py zhihu  文章.md        # CDP：知乎写文章页自动填标题正文，人工点发布
-  uv run publish.py html   文章.md        # 调试：预览知乎粘贴用 HTML
-  uv run publish.py status <article_id>   # 查审核状态
-  uv run publish.py cleanup               # 关闭 CDP 浏览器堆积的标签（防卡死；--all 连知乎页一起清）
+  uv run publish.py draft  文章.md      # 建掘金草稿（含分类+双标签+摘要+专栏不挂）
+  uv run publish.py publish 文章.md     # 全自动发布：草稿→挂专栏→发布→返回链接
+  uv run publish.py cover  文章.md      # PIL 生成 192×128 封面并经编辑器上传（草稿需先建）
+  uv run publish.py zhihu  文章.md      # CDP：知乎写文章页自动填标题正文，人工点发布
+  uv run publish.py html   文章.md      # 调试：预览知乎粘贴用 HTML
 
-文章用 Markdown + frontmatter（title_zhihu / title_juejin / description 50~100 字 /
-category_id / tags / cover 可选）。正文里的 HTML 注释一律剥离不外发。
+体例（强制）：HTML 注释（内部 checklist）剥离；掘金 title_juejin / 知乎 title_zhihu；
+摘要 50~100 字；接口间隔 ≥2.5 秒。
 """
 
 from __future__ import annotations
@@ -752,6 +748,79 @@ def md_to_html(md: str) -> str:
 ZHIHU_WRITE = "https://zhuanlan.zhihu.com/write"
 
 
+def make_cover_zhihu(post: dict) -> Path:
+    """知乎封面：1200×675（16:9），深底 + 系列名 + 篇名。"""
+    try:
+        from PIL import Image, ImageDraw, ImageFont
+    except ImportError:
+        die("缺 PIL——`uv add pillow` 后重试")
+    w, h = 1200, 675
+    img = Image.new("RGB", (w, h), "#121217")
+    d = ImageDraw.Draw(img)
+    d.rectangle([0, 0, w, 18], fill="#2e6cff")
+    font = small = None
+    for fp in FONT_CANDIDATES:
+        if Path(fp).exists():
+            try:
+                font = ImageFont.truetype(fp, 88)
+                small = ImageFont.truetype(fp, 40)
+                mid = ImageFont.truetype(fp, 56)
+                break
+            except Exception:
+                continue
+    if font is None:
+        die("找不到中文字体（msyh/simhei）——封面生成失败")
+    brand = re.sub(r"[《》\s]", "", post.get("cover_text") or post["title_zhihu"])[:8] or "BLOG"
+    d.text((72, 150), brand, font=font, fill="#ffffff")
+    sub = re.sub(r"[《》]", "", post["title_zhihu"])[:22]
+    d.text((72, 420), sub, font=mid, fill="#c8cdd8")
+    d.text((72, 560), (post.get("cover_text") or "")[:24], font=small, fill="#6b7280")
+    out = WF / f"cover_zhihu_{post['file'].stem}.png"
+    img.save(out)
+    return out
+
+
+def zhihu_cover(tab: Tab, post: dict) -> bool:
+    """在编辑页底部「发布设置」区上传封面（UploadPicture-input 已实测存在）。失败不致命。"""
+    png = make_cover_zhihu(post)
+    print(f"· 知乎封面已生成：{png.name}")
+    try:
+        found = tab.evaluate("""(() => {
+          const f = document.querySelector('input.UploadPicture-input');
+          if (!f) return false;
+          f.id = '__tool_zhihu_cover';
+          f.closest('.UploadPicture-wrapper')?.scrollIntoView({block: 'center'});
+          return true;
+        })()""")
+        if not found:
+            print("⚠ 未找到封面上传控件（input.UploadPicture-input）——手动在发布设置区传")
+            return False
+        doc = tab.call("DOM.getDocument")["root"]["nodeId"]
+        node = tab.call("DOM.querySelector", nodeId=doc, selector="#__tool_zhihu_cover").get("nodeId")
+        if not node:
+            print("⚠ 封面 input 定位失败——手动传")
+            return False
+        tab.call("DOM.setFileInputFiles", files=[str(png.resolve())], nodeId=node)
+        tab.evaluate("""(() => {
+          const f = document.querySelector('#__tool_zhihu_cover');
+          if (f) { f.dispatchEvent(new Event('input', {bubbles: true})); f.dispatchEvent(new Event('change', {bubbles: true})); }
+        })()""")
+        tab.pump(8)
+        # 预览判定：占位文案消失即上传成功（知乎预览 DOM 类名不稳定，实测截图已验证）
+        gone = tab.evaluate("""(() => {
+          const w = document.querySelector('.UploadPicture-wrapper');
+          return w ? !(w.innerText || '').includes('添加文章封面') : false;
+        })()""")
+        if gone:
+            print("✓ 封面已上传（发布设置区可见预览）")
+            return True
+        print("⚠ 封面上传后未见预览——到发布设置区确认（创作声明下拉需手动选）")
+        return False
+    except Exception as e:
+        print(f"⚠ 封面上传失败（{str(e)[:60]}）——手动传")
+        return False
+
+
 def zhihu_fill(tab: Tab, title: str, body_md: str) -> None:
     html = md_to_html(body_md)
 
@@ -779,6 +848,12 @@ def zhihu_fill(tab: Tab, title: str, body_md: str) -> None:
       const ed = document.querySelector('[contenteditable="true"]');
       if (!ed) return 'no-editor';
       ed.focus();
+      // 防重贴：编辑器里若有旧内容先全选清空（复用标签页/重试场景）
+      const s0 = window.getSelection();
+      if ((ed.innerText || '').trim().length > 0) {{
+        s0.selectAllChildren(ed);
+        document.execCommand('delete');
+      }}
       const sel = window.getSelection();
       sel.removeAllRanges();
       const range = document.createRange();
@@ -804,6 +879,9 @@ def cmd_zhihu(args) -> None:
     try:
         ensure_browser()
         tab = open_tab(ZHIHU_WRITE, reuse_prefix="https://zhuanlan.zhihu.com")
+        # 复用的标签页可能停在上一篇文章（/p/xxx）——强制回到写文章页
+        if "/write" not in str(tab.evaluate("location.href") or ""):
+            tab.navigate(ZHIHU_WRITE)
         wait_page(tab, "location.href.includes('/write')", timeout=30, desc="进入写文章页")
         if tab.evaluate("location.href.includes('signin') || location.href.includes('login')"):
             print("· 检测到知乎未登录——请在刚打开的浏览器窗口里登录，登录后自动继续（最长 5 分钟）")
@@ -812,7 +890,10 @@ def cmd_zhihu(args) -> None:
             except SystemExit:
                 die("等待登录超时")
         zhihu_fill(tab, post["title_zhihu"], post["body"])
-        print("→ 核对专栏归属/话题/封面（内链、加粗、表格渲染），然后手动点「发布」")
+        zhihu_cover(tab, post)          # 发布设置区自动传封面，失败不致命
+        note = post.get("zhihu_note") or post["description"]
+        print(f"· 建议创作导语（若发布弹窗有导语栏，粘贴这句）：{note[:60]}…")
+        print("→ 核对专栏归属/话题/封面，然后手动点「发布」")
     except (RuntimeError, OSError) as e:
         print(f"⚠ CDP 通道不可用（{e}），退回剪贴板模式")
         zhihu_clipboard(post)
@@ -864,8 +945,8 @@ def make_cover(post: dict) -> Path:
                 continue
     if font is None:
         die("找不到中文字体（msyh/simhei）——封面生成失败")
-    brand = re.sub(r"[《》\s]", "", post.get("cover_text") or post["title_zhihu"])[:6] or "JUEJIN"
-    d.text((12, 26), brand, font=font, fill="#ffffff")
+    brand_j = re.sub(r"[《》\s]", "", post.get("cover_text") or post["title_juejin"])[:6] or "JUEJIN"
+    d.text((12, 26), brand_j, font=font, fill="#ffffff")
     sub = re.sub(r"[《》]", "", post["title_zhihu"])[:14]
     d.text((12, 84), sub, font=small, fill="#9aa0b0")
     out = WF / f"cover_{post['file'].stem}.png"

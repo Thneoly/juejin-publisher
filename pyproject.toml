@@ -1,6 +1,6 @@
 [project]
 name = "juejin-publisher"
-version = "1.0.1"
+version = "1.0.2"
 description = "掘金全自动发布 + 知乎 CDP 半自动（逆向实测口径），含 article-pipeline 文章生产线"
 readme = "README.md"
 requires-python = ">=3.10"
