@@ -78,6 +78,10 @@ tags: "AI,职业发展"                    # 上限 2 个，自动映射到掘�
 | 专栏挂不上 | 发布体的 `column_ids` 字段；专栏可用 `column-new` 直接建：`column/publish` 无 column_id=新建（data 返回新 id）、带 column_id=更新；`column/delete` 删除；专栏头图 16:9，`column-cover` 自动生成上传 |
 | websockets 弃用告警 | v17 要求 connect() 走上下文管理器，直连会告警 |
 
+## 定时发布（Windows + Python）
+
+`scripts/auto_publish.py`（通用驱动）+ `auto_publish.bat` 配 Windows 计划任务：自然排序 posts/ → 按掘金标题去重 → 逐日发一篇；护栏（每日上限/最小间隔）防重复触发，队列发完自动注销任务。详见 skill 文档「定时发布模式」。
+
 ## article-pipeline：从材料到终稿
 
 ```

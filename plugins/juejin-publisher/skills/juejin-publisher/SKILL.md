@@ -82,6 +82,21 @@ tags: "AI,职业发展"                    # 掘金上限 2 个，自动映射�
 
 定时发布：cron / Windows 计划任务每天触发一条 publish 命令，或 Claude Code 的 CronCreate。批量产出先落盘，逐日取 1 篇发。
 
+## 定时发布模式（Windows + Python，无需 Claude 在线）
+
+要「每天固定时间自动发一篇」？用 Windows 计划任务 + 纯 Python 驱动（确定性逻辑，不花 token）：
+
+1. 把 `scripts/auto_publish.py` 和 `scripts/auto_publish.bat` 复制到项目根目录，bat 里的 `cd` 改成项目路径
+2. 建计划任务（Git Bash 里命令要加 `MSYS_NO_PATHCONV=1` 前缀，否则 `/create` 被转成路径）：
+   ```
+   schtasks /create /tn "Blog_morning" /tr "D:\your\blog\auto_publish.bat" /sc daily /st 09:15
+   ```
+3. 驱动逻辑：自然排序 `posts/*.md`（第9辩 < 第10辩）→ 按掘金标题去重 → 发第一篇未发布的
+4. 护栏（内置）：每日上限（默认 2）/ 距最近一篇 ≥1 小时 / 队列发完自动注销 `--task-names` 列出的任务
+5. 一次性补发用 `--only 文件.md`；日志在 `_wf/auto_publish.log`
+
+**实测坑（2026-09）**：Claude 内置 CronCreate 只在 REPL 打开且空闲时触发，不适合无人值守——用 OS 级计划任务；**驱动没有干跑模式，跑一次就是真发一次**；Cookie 过期驱动日志会记 401/403，重跑 `login`；`ctime` 是字符串要 `float()`。
+
 ## 伦理边界
 
 仅供个人内容发布自动化。接口为浏览器抓包逆向所得，无官方文档，平台随时可能变更；控制频率、不要批量营销号式发布。
