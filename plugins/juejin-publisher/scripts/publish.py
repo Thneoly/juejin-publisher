@@ -8,7 +8,9 @@
   * 每篇文章最多 2 个标签（err 4031）；标签搜索 = tag_api/v1/query_tag_list {key_word}
   * 发布体 = {"draft_id","sync_to_org":false,"column_ids":[...],"theme_ids":[],
               "origin_word_count","encrypted_word_count"}，专栏靠 column_ids
-  * 专栏挂载靠 column_ids；封面（掘金 192×128 / 知乎 1200×675）PIL 自动生成并上传
+  * 专栏挂载靠 column_ids；封面（掘金 192×128 / 知乎 1200×675 / 专栏 16:9）PIL 自动生成并上传
+  * 专栏管理 API（2026-09-17 实测）：column/publish 无 column_id=新建（data 返回新 id）、
+    带 column_id=更新（title/content/cover）；column/delete {column_id} 删除
   * 分类：人工智能 6809637773935378440（可在 frontmatter category_id 覆盖）
 
 用法（uv run 或任意 python3.10+；依赖 websockets、pillow）：
@@ -18,6 +20,8 @@
   uv run publish.py preview 文章.md     # 离线校验（摘要 50~100、checklist 剥离、标签映射）
   uv run publish.py tags <关键词>          # 搜掘金标签 ID
   uv run publish.py columns               # 列出我的专栏；--use <id> 切换默认专栏
+  uv run publish.py column-new 标题        # 新建专栏（纯 API），--intro 简介 --use 设为默认
+  uv run publish.py column-cover          # 专栏上 PIL 封面（16:9），--column <id> 指定专栏
   uv run publish.py draft  文章.md      # 建掘金草稿（含分类+双标签+摘要+专栏不挂）
   uv run publish.py publish 文章.md     # 全自动发布：草稿→挂专栏→发布→返回链接
   uv run publish.py cover  文章.md      # PIL 生成 192×128 封面并经编辑器上传（草稿需先建）
@@ -367,11 +371,14 @@ def publish_draft(draft_id: str, cookie: str, word_count: int,
 
 
 def article_status_hint(article_id: str, cookie: str) -> str:
-    """发布后自查：status 0 = 审核中（前台 404、专栏对外为空，通过后自动可见）。"""
+    """发布后自查：先看 audit_status（驳回时 status 仍是 0，别误读成审核中）。"""
     try:
         r = api("/content_api/v1/article/detail", {"article_id": article_id, "forbid_count": True}, cookie)
         info = ((r.get("data") or {}).get("article_info") or {})
         st = info.get("status")
+        if info.get("audit_status") == -1:
+            return ("已被驳回（audit_status=-1）——常见触发：标题/正文含招聘语汇＋钱数组合"
+                    "（高薪、招聘、求职、猎头 + 金额数字）或招聘平台 URL。清理后删旧文重发")
         if st == 0:
             return ("审核中——前台暂不可见属正常（含外链/招聘薪资类内容易触发人审，"
                     "一般几分钟到几小时；创作者中心→内容管理可看进度）")
@@ -1028,6 +1035,24 @@ def url_guard(post: dict) -> None:
         print("  建议降为纯文字描述（如「BOSS 直聘搜 XXX 可复核」）——publish 不会因此中断")
 
 
+RECRUIT_WORDS = re.compile(r"高薪|猎头|招聘|求职|在招|招人")
+
+
+def audit_guard(post: dict) -> None:
+    """推广类驳回预警（真实账号实测）：招聘语汇撞上钱数就高危，标题里的「高薪」必雷。"""
+    risky = []
+    for seg in [post["title_juejin"], *post["body"].splitlines()]:
+        for m in RECRUIT_WORDS.finditer(seg):
+            ctx = seg[max(0, m.start() - 20):m.end() + 20]
+            if m.group(0) in ("高薪", "猎头") or re.search(r"\d", ctx):
+                risky.append(ctx.strip()[:50])
+    if risky:
+        print(f"⚠ 招聘语汇×钱数组合 {len(risky)} 处（推广类驳回高发区），建议改写：")
+        for r in risky[:5]:
+            print(f"    …{r}…")
+        print("  改法参考：高薪招→真金白银请、招聘预算→预算、求职者→看机会的读者——不中断")
+
+
 def cmd_preview(args) -> None:
     post = parse_post(Path(args.file))
     brief, warns = check_brief(post["description"])
@@ -1078,7 +1103,7 @@ def cmd_columns(args) -> None:
     data = r.get("data")
     items = data if isinstance(data, list) else (data or {}).get("data") or []
     if not items:
-        print("（还没有专栏——到创作者中心「专栏管理」手动建一个，一次即可）")
+        print("（还没有专栏——`column-new <标题>` 直接建一个，一次即可）")
     for it in items:
         c, v = it.get("column") or {}, it.get("column_version") or {}
         mark = " ←当前默认" if c.get("column_id") == meta.get("column_id") else ""
@@ -1090,6 +1115,192 @@ def cmd_columns(args) -> None:
         print(f"✓ 默认专栏已切换为 {args.use}")
     elif not meta.get("column_id") and items:
         print("→ 用 `columns --use <id>` 设为发布默认专栏（不设则发布不挂专栏）")
+
+
+COLUMN_MGMT_URL = "https://juejin.cn/creator/content/column?status=all"
+
+
+def fetch_columns(cookie: str, uid: str) -> list[dict]:
+    r = api("/content_api/v1/column/self_center_list",
+            {"user_id": uid, "cursor": "0", "keyword": "", "limit": 20}, cookie)
+    data = r.get("data")
+    return data if isinstance(data, list) else (data or {}).get("data") or []
+
+
+def cmd_column_new(args) -> None:
+    """新建专栏（纯 API）：column/publish 不带 column_id = 创建，data 返回新 id。"""
+    cookie = load_cookie()
+    intro = getattr(args, "intro", None) or "新专栏，简介待补充。"
+    r = api("/content_api/v1/column/publish",
+            {"title": args.title, "content": intro, "cover": ""}, cookie)
+    if r.get("err_no") != 0:
+        die(f"建专栏失败：[{r.get('err_no')}] {r.get('err_msg')}")
+    cid = str(r.get("data") or "")
+    if not cid.isdigit():
+        die(f"建专栏返回异常：{json.dumps(r, ensure_ascii=False)[:200]}")
+    print(f"✓ 专栏已创建：{args.title}")
+    print(f"  column_id = {cid}")
+    print(f"  专栏页：https://juejin.cn/column/{cid}")
+    if getattr(args, "use", False):
+        meta = load_meta(); meta["column_id"] = cid; save_meta(meta)
+        print("✓ 已设为默认专栏（后续 publish 自动挂载）")
+    print(f"→ 补封面：uv run publish.py column-cover --column {cid}")
+
+
+def make_cover_column(title: str, subtitle: str = "") -> Path:
+    """专栏封面：1280×720（16:9；专栏头图源图实测 1920×1080 同比）。"""
+    try:
+        from PIL import Image, ImageDraw, ImageFont
+    except ImportError:
+        die("缺 PIL——`uv add pillow` 后重试")
+    w, h = 1280, 720
+    img = Image.new("RGB", (w, h), "#121217")
+    d = ImageDraw.Draw(img)
+    d.rectangle([0, 0, w, 20], fill="#2e6cff")
+    font = mid = small = None
+    for fp in FONT_CANDIDATES:
+        if Path(fp).exists():
+            try:
+                font = ImageFont.truetype(fp, 96)
+                mid = ImageFont.truetype(fp, 52)
+                small = ImageFont.truetype(fp, 32)
+                break
+            except Exception:
+                continue
+    if font is None:
+        die("找不到中文字体（msyh/simhei）——封面生成失败")
+    name = re.sub(r"[《》\s]", "", title)
+    d.text((80, 200), name[:10], font=font, fill="#ffffff")
+    if subtitle:
+        d.text((80, 420), subtitle[:26], font=mid, fill="#c8cdd8")
+    d.text((80, 620), f"{name[:16]} · 专栏", font=small, fill="#6b7280")
+    out = WF / f"cover_column_{name[:12]}.png"
+    img.save(out)
+    return out
+
+
+VISIBLE_MODAL_JS = ("[...document.querySelectorAll('.create-column-modal')]"
+                    ".find(e => e.offsetParent !== null)")
+
+
+def cmd_column_cover(args) -> None:
+    """专栏封面：PIL 生成 16:9 → CDP 驱动「修改介绍」弹窗上传 → 确认保存。"""
+    meta = load_meta()
+    cookie = load_cookie()
+    cid = getattr(args, "column", None) or meta.get("column_id")
+    if not cid:
+        die("未指定专栏——先 `columns --use <id>` 设默认，或传 --column <id>")
+    uid = meta.get("user_id")
+    if not uid:
+        u = api(USER_URL, None, cookie).get("data") or {}
+        uid = str(u.get("user_id") or "")
+        if uid:
+            meta["user_id"] = uid
+            save_meta(meta)
+    if not uid:
+        die("拿不到 user_id——先跑 whoami")
+    col = next((it for it in fetch_columns(cookie, uid)
+                if str((it.get("column") or {}).get("column_id")) == str(cid)), None)
+    if not col:
+        die(f"专栏 {cid} 不在你的专栏列表里——`columns` 核对")
+    title = str((col.get("column_version") or {}).get("title") or "")
+    old_cover = str((col.get("column_version") or {}).get("cover") or "")
+    if not title:
+        die(f"专栏 {cid} 拿不到标题——创作者中心核对")
+    png = make_cover_column(title, getattr(args, "subtitle", None) or "")
+    print(f"· 封面已生成：{png.name}")
+    ensure_browser()
+    tab = open_tab(COLUMN_MGMT_URL, reuse_prefix="https://juejin.cn/creator/content/column")
+    try:
+        tab.call("Network.enable")
+        if "creator/content/column" not in str(tab.evaluate("location.href") or ""):
+            tab.navigate(COLUMN_MGMT_URL)
+        wait_page(tab, "document.readyState === 'complete'", timeout=30, desc="专栏管理页加载")
+        tab.pump(5)
+        # 逐个试「修改介绍」：以弹窗里的名称输入框对上目标为准（顺序不可靠）
+        n = tab.evaluate("""(() => {
+          window.__colEdits = [...document.querySelectorAll('[class*="byte-dropdown-item"]')]
+            .filter(e => (e.innerText || '').includes('修改介绍'));
+          return window.__colEdits.length;
+        })()""")
+        opened = False
+        for i in range(int(n or 0)):
+            tab.evaluate(f"window.__colEdits[{i}] && window.__colEdits[{i}].click()")
+            tab.pump(3)
+            val = tab.evaluate(f"""(() => {{
+              const dlg = {VISIBLE_MODAL_JS};
+              const inp = dlg && dlg.querySelector('input:not([type=file])');
+              return inp ? inp.value : '';
+            }})()""")
+            if val == title:
+                opened = True
+                print(f"· 已打开「{title}」编辑弹窗")
+                break
+            # 不是目标专栏——取消换下一个
+            tab.evaluate(f"""(() => {{
+              const dlg = {VISIBLE_MODAL_JS};
+              const c = dlg && [...dlg.querySelectorAll('button')]
+                .find(b => (b.innerText || '').trim() === '取消');
+              if (c) c.click();
+            }})()""")
+            tab.pump(2)
+        if not opened:
+            die(f"没找到「{title}」的编辑弹窗（页面上共 {n or 0} 个入口）")
+        found = tab.evaluate(f"""(() => {{
+          const dlg = {VISIBLE_MODAL_JS};
+          const f = dlg && dlg.querySelector('.img-uploader input[type=file]');
+          if (f) f.id = '__tool_col_cover';
+          return !!f;
+        }})()""")
+        if not found:
+            die("没找到封面上传 input——弹窗结构可能变了")
+        doc = tab.call("DOM.getDocument")["root"]["nodeId"]
+        node = tab.call("DOM.querySelector", nodeId=doc, selector="#__tool_col_cover").get("nodeId")
+        if not node:
+            die("封面 input 定位失败")
+        tab.call("DOM.setFileInputFiles", files=[str(png.resolve())], nodeId=node)
+        tab.evaluate("""(() => {
+          const f = document.querySelector('#__tool_col_cover');
+          if (f) {
+            f.dispatchEvent(new Event('input', {bubbles: true}));
+            f.dispatchEvent(new Event('change', {bubbles: true}));
+          }
+        })()""")
+        print("· 上传中（gen_token → TOS → 页面内完成）…")
+        tab.pump(10)
+        prev = tab.evaluate(f"""(() => {{
+          const dlg = {VISIBLE_MODAL_JS};
+          const img = dlg && dlg.querySelector('.img-uploader img');
+          return img ? (img.src || '').split('?')[0].slice(-40) : '';
+        }})()""")
+        if prev:
+            print(f"✓ 封面预览可见：…{prev}")
+        else:
+            print("⚠ 未见封面预览——仍尝试保存，稍后到后台核对")
+        tab.evaluate(f"""(() => {{
+          const dlg = {VISIBLE_MODAL_JS};
+          const b = dlg && [...dlg.querySelectorAll('button')]
+            .find(x => (x.innerText || '').trim() === '确认');
+          if (b) b.click();
+        }})()""")
+        tab.pump(8)
+        tab.evaluate(f"""(() => !{VISIBLE_MODAL_JS})()""")   # 弹窗状态仅参考，成功与否看下面 API
+    finally:
+        tab.close_page()
+    # 以 API 为准：version.cover 变了就是成功（弹窗关闭状态有滞后、实测会误判）
+    new_cover = old_cover
+    for _ in range(6):
+        time.sleep(3)
+        new_cover = next((str((it.get("column_version") or {}).get("cover") or "")
+                          for it in fetch_columns(cookie, uid)
+                          if str((it.get("column") or {}).get("column_id")) == str(cid)), "")
+        if new_cover and new_cover != old_cover:
+            break
+    if new_cover and new_cover != old_cover:
+        print(f"✓ 专栏封面已保存（version.cover 已更新，{cid}）")
+        print(f"→ 核对：https://juejin.cn/column/{cid}")
+    else:
+        print("⚠ 封面字段未见变化——到创作者中心「专栏管理」核对")
 
 
 def cmd_draft(args) -> None:
@@ -1116,6 +1327,7 @@ def cmd_publish(args) -> None:
     post = parse_post(Path(args.file))
     brief, _ = check_brief(post["description"])
     url_guard(post)
+    audit_guard(post)
     cookie = load_cookie()
     tag_ids = resolve_tag_ids(post, cookie, interactive=True)
     print(f"· 标签：{tag_ids}")
@@ -1159,6 +1371,8 @@ def main() -> None:
         ("preview", cmd_preview, "离线校验（不发任何请求）", "file", ()),
         ("tags", cmd_tags, "搜索掘金标签 ID", "keyword", ()),
         ("columns", cmd_columns, "列出我的专栏；--use <id> 设为默认", None, ("--use",)),
+        ("column-new", cmd_column_new, "新建专栏（纯 API）", "title", ("--intro", "--use")),
+        ("column-cover", cmd_column_cover, "给专栏生成 16:9 封面并上传（CDP）", None, ("--column", "--subtitle")),
         ("draft", cmd_draft, "建掘金草稿（分类+双标签+摘要）", "file", ()),
         ("publish", cmd_publish, "全自动发布（含挂专栏与封面）", "file", ("--no-column", "--no-cover")),
         ("cover", cmd_cover, "生成 192×128 封面并上传到草稿", "file", ("--draft",)),
@@ -1168,7 +1382,8 @@ def main() -> None:
     for name, fn, help_, arg, flags in specs:
         sp = sub.add_parser(name, help=help_)
         if arg:
-            sp.add_argument(arg, help="posts 下的 md 文件" if arg == "file" else "标签关键词")
+            sp.add_argument(arg, help={"file": "posts 下的 md 文件", "title": "专栏标题",
+                                       "keyword": "标签关键词", "article_id": "文章 ID"}[arg])
         for fl in flags:
             if fl == "--use":
                 sp.add_argument("--use", help="设为默认专栏的 column_id")
@@ -1180,6 +1395,12 @@ def main() -> None:
                 sp.add_argument("--no-cover", action="store_true", help="跳过自动封面")
             elif fl == "--all":
                 sp.add_argument("--all", action="store_true", help="连知乎写作页一起清")
+            elif fl == "--intro":
+                sp.add_argument("--intro", help="专栏简介（默认占位文案）")
+            elif fl == "--column":
+                sp.add_argument("--column", help="专栏 ID（默认取 meta 里的默认专栏）")
+            elif fl == "--subtitle":
+                sp.add_argument("--subtitle", help="封面副标题文案")
         sp.set_defaults(func=fn)
 
     args = p.parse_args()
