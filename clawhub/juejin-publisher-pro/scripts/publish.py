@@ -821,7 +821,7 @@ def zhihu_cover(tab: Tab, post: dict) -> bool:
         if gone:
             print("✓ 封面已上传（发布设置区可见预览）")
             return True
-        print("⚠ 封面上传后未见预览——到发布设置区确认（创作声明下拉需手动选）")
+        print("⚠ 封面预览探针未见（探针不可靠，/edit 态常误报）——以浏览器实际显示为准；真缺再手动传")
         return False
     except Exception as e:
         print(f"⚠ 封面上传失败（{str(e)[:60]}）——手动传")
