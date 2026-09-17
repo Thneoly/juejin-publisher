@@ -43,7 +43,7 @@ tags: "AI,职业发展"                    # 掘金上限 2 个，自动映射�
 | `draft 文章.md` | 建草稿（分类+双标签+摘要+自动封面），后台核对后手动发 |
 | `publish 文章.md` | 全自动：建稿→传封面→挂专栏→发布→报审核状态（`--no-column` `--no-cover` 可关） |
 | `status <article_id>` | 查审核：audit_status -1=已驳回（此时 status 仍是 0，别误读）；status 0=审核中（前台 404 属正常），1/2=已上线 |
-| `zhihu 文章.md` | CDP 开知乎写文章页，自动填标题+注入正文（Markdown→HTML），人工点发布 |
+| `zhihu 文章.md` | CDP 开知乎写文章页，自动填标题+注入正文（Markdown→HTML），人工点发布；`--auto` 连发布也自动点 |
 | `cover 文章.md` | 手动补封面（PIL 生成+CDP 上传） |
 | `cleanup` | 关闭 CDP 浏览器堆积的标签（防长期运行卡死；`--all` 连知乎写作页一起清） |
 
@@ -61,7 +61,7 @@ tags: "AI,职业发展"                    # 掘金上限 2 个，自动映射�
 - **审核状态先看 audit_status 再看 status**：驳回的文章 status 仍是 0（审核中假象），只有 audit_status=-1 才是驳回
 - **专栏 API**：`column/publish` 无 column_id=新建（data 返回新 id）、带 column_id=更新（title/content/cover）；`column/delete {column_id}` 删除。专栏头图 16:9（源图 1920×1080），column-cover 按 1280×720 生成
 - 接口间隔 ≥2.5 秒防风控（已内置）；401/403 = Cookie 失效，重跑 login
-- 知乎无公开 API：走 CDP 页面注入（独立浏览器 profile，不动日常 Chrome）
+- 知乎无公开 API：走 CDP 页面注入（独立浏览器 profile，不动日常 Chrome）。**发布可一键直发**（2026-09-18 实测）：知乎记住此前的创作声明等设置，点「发布」不弹设置弹窗直接成功——`zhihu --auto` 即全自动；新环境首次发布可能弹创作声明弹窗，工具会检测到并提示人工补选。封面预览探针在 /edit 态常误报「未见预览」，以浏览器实际显示/发布后 og:image 为准
 
 ## 伦理边界
 

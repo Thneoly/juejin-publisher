@@ -26,6 +26,7 @@
   uv run publish.py publish 文章.md     # 全自动发布：草稿→挂专栏→发布→返回链接
   uv run publish.py cover  文章.md      # PIL 生成 192×128 封面并经编辑器上传（草稿需先建）
   uv run publish.py zhihu  文章.md      # CDP：知乎写文章页自动填标题正文，人工点发布
+  uv run publish.py zhihu  文章.md --auto   # 同上，且自动点「发布」（一键直发，实测 2026-09-18）
   uv run publish.py html   文章.md      # 调试：预览知乎粘贴用 HTML
 
 体例（强制）：HTML 注释（内部 checklist）剥离；掘金 title_juejin / 知乎 title_zhihu；
@@ -879,6 +880,44 @@ def zhihu_fill(tab: Tab, title: str, body_md: str) -> None:
     print(f"✓ 标题已填、正文已注入编辑器（当前正文约 {r} 字）")
 
 
+def zhihu_auto_publish(tab: Tab) -> str | None:
+    """点「发布」直达发布——知乎会记住此前的创作声明等设置，实测一键直发（2026-09-18）。
+    若新环境弹出设置弹窗（要求选创作声明），降级提示人工补选。"""
+    clicked = tab.evaluate("""(() => {
+      const btns = [...document.querySelectorAll('button')]
+        .filter(b => (b.innerText || '').trim() === '发布');
+      if (!btns.length) return false;
+      btns[btns.length - 1].click();       // 顶栏主按钮取最末一个
+      return true;
+    })()""")
+    if not clicked:
+        print("⚠ 没找到「发布」按钮——请手动点发布")
+        return None
+    for _ in range(20):                    # 等结果：跳转 /p/<id>（非 /edit）或出现「发布成功」
+        tab.pump(1)
+        href = str(tab.evaluate("location.href") or "")
+        if "/p/" in href and "/edit" not in href:
+            tab.evaluate("""(() => {       // 尽力关掉分享弹窗，给下次复用留干净状态
+              document.body.dispatchEvent(new KeyboardEvent('keydown', {key: 'Escape', keyCode: 27, bubbles: true}));
+              const x = document.querySelector('[class*=Modal] [class*=close], [aria-label*="关闭"]');
+              if (x) x.click();
+            })()""")
+            return href
+        if tab.evaluate("((document.body.innerText||'').includes('发布成功'))"):
+            tab.pump(2)
+            return str(tab.evaluate("location.href") or "")
+    modal = tab.evaluate("""(() => {       # 超时：可能弹了设置弹窗（新环境首次发布）
+      const m = [...document.querySelectorAll('[class*=Modal],[class*=modal]')]
+        .filter(e => e.offsetParent !== null && (e.innerText || '').length > 10);
+      return m.length ? (m[m.length - 1].innerText || '').slice(0, 120) : '';
+    })()""")
+    if modal:
+        print(f"⚠ 弹出了设置弹窗（{modal[:60]}…）——请在浏览器里补选创作声明后点确认")
+    else:
+        print("⚠ 等待发布结果超时——到浏览器窗口确认")
+    return None
+
+
 def cmd_zhihu(args) -> None:
     post = parse_post(Path(args.file))
     if not post["title_zhihu"]:
@@ -900,6 +939,11 @@ def cmd_zhihu(args) -> None:
         zhihu_cover(tab, post)          # 发布设置区自动传封面，失败不致命
         note = post.get("zhihu_note") or post["description"]
         print(f"· 建议创作导语（若发布弹窗有导语栏，粘贴这句）：{note[:60]}…")
+        if getattr(args, "auto", False):
+            url = zhihu_auto_publish(tab)
+            if url:
+                print(f"✓ 知乎已自动发布：{url}")
+            return
         print("→ 核对专栏归属/话题/封面，然后手动点「发布」")
     except (RuntimeError, OSError) as e:
         print(f"⚠ CDP 通道不可用（{e}），退回剪贴板模式")
@@ -1376,7 +1420,7 @@ def main() -> None:
         ("draft", cmd_draft, "建掘金草稿（分类+双标签+摘要）", "file", ()),
         ("publish", cmd_publish, "全自动发布（含挂专栏与封面）", "file", ("--no-column", "--no-cover")),
         ("cover", cmd_cover, "生成 192×128 封面并上传到草稿", "file", ("--draft",)),
-        ("zhihu", cmd_zhihu, "CDP 半自动：知乎填标题正文，人工点发布", "file", ()),
+        ("zhihu", cmd_zhihu, "CDP：知乎填标题正文封面；--auto 自动点发布", "file", ("--auto",)),
         ("html", cmd_html, "调试：预览知乎粘贴用 HTML", "file", ()),
     )
     for name, fn, help_, arg, flags in specs:
@@ -1401,6 +1445,9 @@ def main() -> None:
                 sp.add_argument("--column", help="专栏 ID（默认取 meta 里的默认专栏）")
             elif fl == "--subtitle":
                 sp.add_argument("--subtitle", help="封面副标题文案")
+            elif fl == "--auto":
+                sp.add_argument("--auto", action="store_true",
+                                help="知乎全自动：填完直接点发布（创作声明沿用上次设置）")
         sp.set_defaults(func=fn)
 
     args = p.parse_args()
