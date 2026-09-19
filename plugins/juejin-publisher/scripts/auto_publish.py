@@ -111,7 +111,7 @@ def main() -> int:
                       if datetime.fromtimestamp(float(a.get("ctime") or 0)).date() == today)
         newest_age_h = (time.time() - float(arts[0].get("ctime") or 0)) / 3600
         log(f"当日已发 {today_n} 篇；最近一篇 {newest_age_h:.1f} 小时前")
-        if today_n >= args.daily_limit:
+        if args.daily_limit and today_n >= args.daily_limit:
             log(f"已达每日上限 {args.daily_limit} 篇，跳过")
             return 0
         if newest_age_h < args.min_gap_hours:
