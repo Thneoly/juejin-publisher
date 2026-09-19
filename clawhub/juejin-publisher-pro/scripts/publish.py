@@ -895,7 +895,10 @@ def zhihu_auto_publish(tab: Tab) -> str | None:
         return None
     for _ in range(20):                    # 等结果：跳转 /p/<id>（非 /edit）或出现「发布成功」
         tab.pump(1)
-        href = str(tab.evaluate("location.href") or "")
+        try:
+            href = str(tab.evaluate("location.href") or "")
+        except Exception:
+            continue                       # 跳转中求值必炸（context destroyed）——这恰是发布进行中的信号，继续等
         if "/p/" in href and "/edit" not in href:
             tab.evaluate("""(() => {       // 尽力关掉分享弹窗，给下次复用留干净状态
               document.body.dispatchEvent(new KeyboardEvent('keydown', {key: 'Escape', keyCode: 27, bubbles: true}));

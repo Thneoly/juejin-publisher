@@ -55,7 +55,7 @@ args: {
 1. **并行写初稿**：所有文章同时写（每篇 1 个 agent，`parallel()`）；每篇要 slug（文件名）/ topic（一句话命题）/ material（素材路径）
 2. **分批评审**：每批 3 篇跑完整 pipeline（三路评审并行 → 修订 → 对抗复审）
 3. **NEEDS_WORK 修复**：复审不过的派修复 agent 按遗留清单逐条修，不重跑全流程
-4. **发布**：每篇加 frontmatter → `publish.py preview` 批量校验 → 逐日逐篇 publish（见下）
+4. **发布**：每篇加 frontmatter → 入 publisher-agent 的 plan.yaml（排期队列）→ 由 driver 流水线逐日发布（护栏/去重/门禁/审计全自动）；裸 publish.py 直发仅救火用
 
 实测（9 篇 × 完整流水线）：54 个 agent、约 2 小时（含修复轮）；评审共发现 206 个问题；5 篇一轮 PASS、4 篇 NEEDS_WORK → 修复后全部可发。
 
@@ -65,8 +65,8 @@ args: {
 article-pipeline 产出 draft.md
     ↓ 加 frontmatter（title_juejin/description/category_id/tags）
     ↓ publish.py preview（离线校验）
-    ↓ publish.py columns --use <专栏ID>（切换目标专栏）
-    ↓ publish.py publish（全自动：封面/标签/专栏/发布/审核状态）
+    ↓ 入队 publisher-agent plan.yaml（driver 接管：护栏/去重/门禁/事件审计）
+    ↓ driver tick（全自动：封面/标签/专栏/发布/审核轮询；publish.py 直发仅救火）
 ```
 
 注意：`column_id` 写在 frontmatter 里**无效**（publish.py 不读取），必须用 `columns --use` 预设。
