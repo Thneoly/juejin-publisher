@@ -897,18 +897,18 @@ def zhihu_auto_publish(tab: Tab) -> str | None:
         tab.pump(1)
         try:
             href = str(tab.evaluate("location.href") or "")
+            if "/p/" in href and "/edit" not in href:
+                tab.evaluate("""(() => {   // 尽力关掉分享弹窗（失败不致命）
+                  document.body.dispatchEvent(new KeyboardEvent('keydown', {key: 'Escape', keyCode: 27, bubbles: true}));
+                  const x = document.querySelector('[class*=Modal] [class*=close], [aria-label*="关闭"]');
+                  if (x) x.click();
+                })()""")
+                return href
+            if tab.evaluate("((document.body.innerText||'').includes('发布成功'))"):
+                tab.pump(2)
+                return str(tab.evaluate("location.href") or "")
         except Exception:
-            continue                       # 跳转中求值必炸（context destroyed）——这恰是发布进行中的信号，继续等
-        if "/p/" in href and "/edit" not in href:
-            tab.evaluate("""(() => {       // 尽力关掉分享弹窗，给下次复用留干净状态
-              document.body.dispatchEvent(new KeyboardEvent('keydown', {key: 'Escape', keyCode: 27, bubbles: true}));
-              const x = document.querySelector('[class*=Modal] [class*=close], [aria-label*="关闭"]');
-              if (x) x.click();
-            })()""")
-            return href
-        if tab.evaluate("((document.body.innerText||'').includes('发布成功'))"):
-            tab.pump(2)
-            return str(tab.evaluate("location.href") or "")
+            continue                       # 跳转/重渲染中求值会炸——发布进行中的正常现象，继续等
     modal = tab.evaluate("""(() => {       # 超时：可能弹了设置弹窗（新环境首次发布）
       const m = [...document.querySelectorAll('[class*=Modal],[class*=modal]')]
         .filter(e => e.offsetParent !== null && (e.innerText || '').length > 10);
