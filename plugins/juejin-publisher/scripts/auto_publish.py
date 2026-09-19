@@ -32,7 +32,7 @@ if sys.platform == "win32":
 import publish as P
 
 DEFAULTS = {
-    "daily_limit": 2,        # 每日发布上限（发布纪律：1~2 篇）
+    "daily_limit": 0,        # 每日发布上限（0=不限，2026-09-19 用户决策：节奏自担）
     "min_gap_hours": 1.0,    # 距最近一篇的最小间隔（防同时段重复触发）
     "task_names": "",        # 队列发完自动注销的计划任务名（逗号分隔）
 }

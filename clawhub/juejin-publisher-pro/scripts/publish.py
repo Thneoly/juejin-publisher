@@ -909,7 +909,7 @@ def zhihu_auto_publish(tab: Tab) -> str | None:
                 return str(tab.evaluate("location.href") or "")
         except Exception:
             continue                       # 跳转/重渲染中求值会炸——发布进行中的正常现象，继续等
-    modal = tab.evaluate("""(() => {       # 超时：可能弹了设置弹窗（新环境首次发布）
+    modal = tab.evaluate("""(() => {       // 超时：可能弹了设置弹窗（新环境首次发布）
       const m = [...document.querySelectorAll('[class*=Modal],[class*=modal]')]
         .filter(e => e.offsetParent !== null && (e.innerText || '').length > 10);
       return m.length ? (m[m.length - 1].innerText || '').slice(0, 120) : '';
