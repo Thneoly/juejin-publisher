@@ -130,8 +130,10 @@ def main() -> int:
 
     log(f"队列 {len(queue)} 篇已全部发布")
     for tn in filter(None, args.task_names.split(",")):
-        subprocess.run(["schtasks", "/Delete", "/TN", tn, "/F"], capture_output=True)
-        log(f"已注销计划任务 {tn}")
+        # 停用而非删除（publisher-agent 实测教训）：删了下次排期会静默无任务；
+        # 停用后重新 schtasks /create 同名任务即恢复
+        subprocess.run(["schtasks", "/Change", "/TN", tn, "/DISABLE"], capture_output=True)
+        log(f"已停用计划任务 {tn}（重新创建同名任务即可恢复）")
     return 0
 
 

@@ -61,6 +61,8 @@ tags: "AI,职业发展"                    # 掘金上限 2 个，自动映射�
 - **审核状态先看 audit_status 再看 status**：驳回的文章 status 仍是 0（审核中假象），只有 audit_status=-1 才是驳回
 - **专栏 API**：`column/publish` 无 column_id=新建（data 返回新 id）、带 column_id=更新（title/content/cover）；`column/delete {column_id}` 删除。专栏头图 16:9（源图 1920×1080），column-cover 按 1280×720 生成
 - 接口间隔 ≥2.5 秒防风控（已内置）；401/403 = Cookie 失效，重跑 login
+- **掘金编辑器反无头**（publisher-agent 实测 2026-09-20）：封面上传/扫码必须在**有头** Chromium 跑——headless 下编辑器不渲染「发布」按钮（count=0），封面链直接走不通
+- **计划任务「存在 ≠ 启用」**：队列发完把任务停用后，重新部署时必须查停用态并 /ENABLE（只查存在会误报正常，publisher-agent 实测一天没跑）；schtasks 中文输出是 GBK，判定禁用态建议过 PowerShell
 - 知乎无公开 API：走 CDP 页面注入（独立浏览器 profile，不动日常 Chrome）。**发布可一键直发**（2026-09-18 实测）：知乎记住此前的创作声明等设置，点「发布」不弹设置弹窗直接成功——`zhihu --auto` 即全自动；新环境首次发布可能弹创作声明弹窗，工具会检测到并提示人工补选。封面预览探针在 /edit 态常误报「未见预览」，以浏览器实际显示/发布后 og:image 为准
 
 ## 发布节奏（用户自担）
